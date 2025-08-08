@@ -103,8 +103,8 @@ systemctl enable --now caddy
 if $ONEDRIVE_DOWNLOAD; then
   echo -e "\n>>> 安装 OneDrive CLI"
   apt update && apt install -y software-properties-common
-  add-apt-repository universe -y
-  add-apt-repository ppa:yann1ck/onedrive -y
+  apt-add-repository universe
+  apt-add-repository ppa:yann1ck/onedrive -y
   apt update && apt install -y onedrive
 fi
 
@@ -117,8 +117,8 @@ if [[ -n "$ONEDRIVE_AUTH_URL" ]]; then
   echo "正在使用授权 URL 完成登录..."
   echo "$ONEDRIVE_AUTH_URL" | /usr/bin/onedrive --synchronize --authorize
 else
-  echo -e "\n>>> 请打开授权链接完成 OneDrive 登录："
-  /usr/bin/onedrive --synchronize --auth-response
+  echo -e "\n>>> 请复制下方授权链接到浏览器完成 OneDrive 登录："
+  /usr/bin/onedrive --synchronize --auth-only
   echo -e "\n登录完成后，系统将自动开始实时同步。"
 fi
 
