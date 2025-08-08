@@ -1,101 +1,69 @@
 #!/bin/bash
 
-# ========== 可通过参数指定的变量 ==========
-DOMAIN=""
-CF_API_TOKEN=""
-EMAIL=""
+# 一键部署 Vaultwarden + Caddy 脚本
+# 用法: ./deploy.sh <域名> <邮箱> [vaultwarden端口,默认8080]
 
-# ========== 解析参数 ==========
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --domain) DOMAIN="$2"; shift 2 ;;
-    --cf-api-token) CF_API_TOKEN="$2"; shift 2 ;;
-    --email) EMAIL="$2"; shift 2 ;;
-    *) echo "未知参数: $1"; exit 1 ;;
-  esac
-done
+set -e
 
-# ========== 交互式输入 ==========
-[[ -z "$DOMAIN" ]] && read -p "请输入你的域名（用于反代 Vaultwarden）: " DOMAIN
-[[ -z "$CF_API_TOKEN" ]] && read -p "请输入你的 Cloudflare API Token: " CF_API_TOKEN
-[[ -z "$EMAIL" ]] && read -p "请输入你的邮箱（用于 Caddy 注册）: " EMAIL
+DOMAIN=$1
+EMAIL=$2
+VW_PORT=${3:-8080}
 
-# ========== 安装必要组件 ==========
-apt update && apt install -y curl unzip git docker.io docker-compose sqlite3 systemd-cron
+if [[ -z "$DOMAIN" || -z "$EMAIL" ]]; then
+    echo "用法: $0 <域名> <邮箱> [vaultwarden端口,默认8080]"
+    exit 1
+fi
 
-# ========== 安装带 Cloudflare DNS 插件的 Caddy ==========
-mkdir -p /opt/caddy
-curl -sSL "https://caddyserver.com/api/download?os=linux&arch=amd64&idempotency=123&plugins=tls.dns.cloudflare" -o /opt/caddy/caddy.tar.gz
-tar -xf /opt/caddy/caddy.tar.gz -C /opt/caddy
-install /opt/caddy/caddy /usr/local/bin/caddy
-setcap cap_net_bind_service=+ep /usr/local/bin/caddy
+# 安装 Docker 和 Docker Compose
+if ! command -v docker &>/dev/null; then
+    curl -fsSL https://get.docker.com | bash
+fi
+if ! command -v docker-compose &>/dev/null; then
+    curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    chmod +x /usr/local/bin/docker-compose
+fi
 
-# ========== 创建 Vaultwarden 项目目录 ==========
-mkdir -p /opt/vaultwarden/data
-cd /opt/vaultwarden
+mkdir -p vaultwarden-caddy && cd vaultwarden-caddy
 
-# ========== 创建 docker-compose.yml ==========
+# 生成 docker-compose.yml
 cat > docker-compose.yml <<EOF
 version: "3"
-
 services:
-  vaultwarden:
-    image: vaultwarden/server:latest
-    container_name: vaultwarden
-    restart: unless-stopped
-    volumes:
-      - ./data:/data
-    environment:
-      - DOMAIN=https://${DOMAIN}
-    networks:
-      - vaultwarden_net
+    vaultwarden:
+        image: vaultwarden/server:latest
+        container_name: vaultwarden
+        restart: unless-stopped
+        environment:
+            - WEBSOCKET_ENABLED=true
+        volumes:
+            - ./vw-data:/data
+        ports:
+            - "${VW_PORT}:80"
 
-networks:
-  vaultwarden_net:
-    driver: bridge
+    caddy:
+        image: caddy:alpine
+        container_name: caddy
+        restart: unless-stopped
+        ports:
+            - "80:80"
+            - "443:443"
+        volumes:
+            - ./Caddyfile:/etc/caddy/Caddyfile
+            - ./caddy-data:/data
+            - ./caddy-config:/config
 EOF
 
-# ========== 创建 Caddyfile ==========
-mkdir -p /etc/caddy
-
-cat > /etc/caddy/Caddyfile <<EOF
-$DOMAIN {
-  reverse_proxy 127.0.0.1:8000
-  tls {
-    dns cloudflare \$CF_API_TOKEN
-    email $EMAIL
-  }
+# 生成 Caddyfile
+cat > Caddyfile <<EOF
+${DOMAIN} {
+    reverse_proxy vaultwarden:${VW_PORT}
+    encode gzip
+    tls ${EMAIL}
 }
 EOF
 
-# ========== Caddy systemd 配置 ==========
-cat > /etc/systemd/system/caddy.service <<EOF
-[Unit]
-Description=Caddy Web Server
-After=network.target docker.service
-Requires=docker.service
-
-[Service]
-ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
-ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
-Restart=on-failure
-
-Environment="CF_API_TOKEN=$CF_API_TOKEN"
-Environment="EMAIL=$EMAIL"
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# ========== 启动 Vaultwarden ==========
+# 启动服务
 docker-compose up -d
 
-# ========== 启动 Caddy ==========
-systemctl daemon-reexec
-systemctl daemon-reload
-systemctl enable --now caddy
-
-
-
-echo -e "\n✅ 部署完成！"
-echo -e "访问地址：https://$DOMAIN"
+echo "部署完成！"
+echo "请访问: https://${DOMAIN}"
