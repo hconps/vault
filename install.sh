@@ -4,8 +4,6 @@
 DOMAIN=""
 CF_API_TOKEN=""
 EMAIL=""
-ONEDRIVE_AUTH_URL=""
-ONEDRIVE_DOWNLOAD=true
 
 # ========== 解析参数 ==========
 while [[ $# -gt 0 ]]; do
@@ -13,8 +11,6 @@ while [[ $# -gt 0 ]]; do
     --domain) DOMAIN="$2"; shift 2 ;;
     --cf-api-token) CF_API_TOKEN="$2"; shift 2 ;;
     --email) EMAIL="$2"; shift 2 ;;
-    --onedrive-auth-url) ONEDRIVE_AUTH_URL="$2"; shift 2 ;;
-    --no-onedrive-download) ONEDRIVE_DOWNLOAD=false; shift ;;
     *) echo "未知参数: $1"; exit 1 ;;
   esac
 done
@@ -99,67 +95,7 @@ systemctl daemon-reexec
 systemctl daemon-reload
 systemctl enable --now caddy
 
-# ========== 配置 OneDrive ==========
-if $ONEDRIVE_DOWNLOAD; then
-  echo -e "\n>>> 安装 OneDrive CLI"
-  apt update && apt install -y software-properties-common
-  apt-add-repository universe
-  apt-add-repository ppa:yann1ck/onedrive -y
-  apt update && apt install -y onedrive
-fi
 
-mkdir -p /root/.config/onedrive
-cat > /root/.config/onedrive/config <<EOF
-sync_dir = "/opt/vaultwarden/data"
-EOF
-
-if [[ -n "$ONEDRIVE_AUTH_URL" ]]; then
-  echo "正在使用授权 URL 完成登录..."
-  echo "$ONEDRIVE_AUTH_URL" | /usr/bin/onedrive --synchronize --authorize
-else
-  echo -e "\n>>> 请复制下方授权链接到浏览器完成 OneDrive 登录："
-  /usr/bin/onedrive --synchronize --auth-only
-  echo -e "\n登录完成后，系统将自动开始实时同步。"
-fi
-
-# ========== 设置 OneDrive 为 systemd 服务 ==========
-cat > /etc/systemd/system/onedrive.service <<EOF
-[Unit]
-Description=OneDrive Sync Service
-After=network-online.target docker.service
-Wants=network-online.target
-
-[Service]
-ExecStart=/usr/bin/onedrive --monitor --syncdir "/opt/vaultwarden/data"
-Restart=always
-User=root
-
-[Install]
-WantedBy=default.target
-EOF
-
-systemctl daemon-reload
-systemctl enable --now onedrive
-
-# ========== 安装 rclone 并配置每日备份 ==========
-curl https://rclone.org/install.sh | bash
-
-echo -e "\n>>> 请配置 rclone（选择 OneDrive 类型，完成授权）"
-rclone config
-
-# ========== 创建每日备份脚本 ==========
-cat > /usr/local/bin/vaultwarden_backup.sh <<EOF
-#!/bin/bash
-TIMESTAMP=\$(date +%F)
-BACKUP_FILE="/tmp/vaultwarden-\$TIMESTAMP.zip"
-zip -r \$BACKUP_FILE /opt/vaultwarden/data
-rclone copy \$BACKUP_FILE remote:VaultwardenBackup
-rm -f \$BACKUP_FILE
-EOF
-chmod +x /usr/local/bin/vaultwarden_backup.sh
-
-# ========== 加入每日 cron ==========
-(crontab -l 2>/dev/null; echo "0 3 * * * /usr/local/bin/vaultwarden_backup.sh") | crontab -
 
 echo -e "\n✅ 部署完成！"
 echo -e "访问地址：https://$DOMAIN"
